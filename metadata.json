@@ -1,0 +1,5 @@
+{
+  "name": "GlicoControl",
+  "description": "Um aplicativo web simples e eficiente para monitoramento e histórico de glicemia, projetado para rodar em um único arquivo HTML.",
+  "requestFramePermissions": []
+}
