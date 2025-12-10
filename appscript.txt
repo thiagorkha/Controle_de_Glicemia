@@ -1,0 +1,193 @@
+/**
+ * Código para rodar no Google Apps Script (Backend)
+ * 1. Abra sua planilha no Google Sheets.
+ * 2. Vá em Extensões > Apps Script.
+ * 3. Cole este código, apagando qualquer outro existente.
+ * 4. Clique em "Implantar" (Deploy) > "Nova implantação".
+ * 5. Selecione o tipo "App da Web".
+ * 6. Importante: Em "Quem pode acessar", escolha "Qualquer pessoa".
+ * 7. Copie a URL gerada e cole no arquivo HTML abaixo.
+ */
+
+// Importações necessárias
+var LockService = LockService
+var SpreadsheetApp = SpreadsheetApp
+var Logger = Logger
+var ContentService = ContentService
+var Utilities = Utilities
+var Session = Session
+
+function doPost(e) {
+  try {
+    var lock = LockService.getScriptLock()
+    lock.tryLock(10000)
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet()
+    Logger.log("ID da Planilha: " + ss.getId())
+    Logger.log("Nome da Planilha: " + ss.getName())
+
+    // Usa a folha 'Dados' ou cria se não existir
+    var sheet = ss.getSheetByName("Dados")
+    if (!sheet) {
+      sheet = ss.insertSheet("Dados")
+      sheet.appendRow(["Data", "Hora", "Glicemia"]) // Cabeçalho
+      Logger.log("Folha Dados criada")
+    }
+
+    Logger.log("=== INÍCIO DA REQUISIÇÃO ===")
+    Logger.log("Conteúdo recebido: " + e.postData.contents)
+
+    // Interpreta os dados enviados
+    var data = JSON.parse(e.postData.contents)
+    var action = data.action
+    Logger.log("Action: " + action)
+
+    if (action === "save") {
+      // Salvar medição
+      Logger.log("Salvando: " + data.data + " " + data.hora + " " + data.glicemia)
+      sheet.appendRow([data.data, data.hora, data.glicemia])
+      Logger.log("Dados salvos com sucesso!")
+
+      lock.releaseLock()
+      return ContentService.createTextOutput(JSON.stringify({ result: "success" })).setMimeType(
+        ContentService.MimeType.JSON,
+      )
+    } else if (action === "read") {
+      Logger.log("==========================================")
+      Logger.log("INICIANDO LEITURA DE DADOS")
+      Logger.log("Data inicial solicitada: " + data.startDate)
+      Logger.log("Data final solicitada: " + data.endDate)
+      Logger.log("==========================================")
+
+      var rows = sheet.getDataRange().getValues()
+      Logger.log("Total de linhas na planilha (incluindo cabeçalho): " + rows.length)
+
+      if (rows.length > 1) {
+        Logger.log("Primeira linha de dados (índice 1): " + JSON.stringify(rows[1]))
+        if (rows.length > 2) {
+          Logger.log("Segunda linha de dados (índice 2): " + JSON.stringify(rows[2]))
+        }
+        if (rows.length > 3) {
+          Logger.log("Terceira linha de dados (índice 3): " + JSON.stringify(rows[3]))
+        }
+      } else {
+        Logger.log("ATENÇÃO: Planilha vazia! Apenas cabeçalho encontrado.")
+      }
+
+      rows.shift() // Remove cabeçalho
+      Logger.log("Linhas após remover cabeçalho: " + rows.length)
+
+      var filteredData = []
+
+      var startParts = data.startDate.split("-").map(Number)
+      var endParts = data.endDate.split("-").map(Number)
+
+      var start = new Date(startParts[0], startParts[1] - 1, startParts[2], 0, 0, 0, 0)
+      var end = new Date(endParts[0], endParts[1] - 1, endParts[2], 23, 59, 59, 999)
+
+      Logger.log("Data de início convertida: " + start.toISOString())
+      Logger.log("Data final convertida: " + end.toISOString())
+      Logger.log("Start timestamp: " + start.getTime())
+      Logger.log("End timestamp: " + end.getTime())
+
+      // Filtra os dados
+      for (var i = 0; i < rows.length; i++) {
+        Logger.log("------ Processando linha " + (i + 2) + " ------")
+
+        var rowDateStr = rows[i][0]
+
+        if (!rowDateStr || rowDateStr === "") {
+          Logger.log("Linha vazia, pulando")
+          continue
+        }
+
+        Logger.log("Tipo da data: " + typeof rowDateStr)
+        Logger.log("Valor bruto: " + rowDateStr)
+
+        // Se for um objeto Date, converter para string DD/MM/AAAA
+        if (rowDateStr instanceof Date) {
+          var day = String(rowDateStr.getDate()).padStart(2, "0")
+          var month = String(rowDateStr.getMonth() + 1).padStart(2, "0")
+          var year = rowDateStr.getFullYear()
+          rowDateStr = day + "/" + month + "/" + year
+          Logger.log("Convertido de Date para string: " + rowDateStr)
+        } else {
+          rowDateStr = String(rowDateStr).trim()
+          Logger.log("Convertido para string: " + rowDateStr)
+        }
+
+        // Agora processar a string de data no formato DD/MM/AAAA
+        var rowDateParts = rowDateStr.split("/")
+        Logger.log("Partes da data: " + JSON.stringify(rowDateParts))
+
+        if (rowDateParts.length !== 3) {
+          Logger.log("ERRO: Data em formato inválido! Esperado DD/MM/AAAA")
+          continue
+        }
+
+        // Cria objeto data da linha
+        var rowDate = new Date(
+          Number.parseInt(rowDateParts[2]), // Ano
+          Number.parseInt(rowDateParts[1]) - 1, // Mês (0-indexado)
+          Number.parseInt(rowDateParts[0]), // Dia
+          12, // Usando meio-dia para evitar problemas de timezone
+          0,
+          0,
+          0,
+        )
+
+        Logger.log("Data da linha convertida: " + rowDate.toISOString())
+        Logger.log("Timestamp da linha: " + rowDate.getTime())
+
+        var dentroDoPerido = rowDate.getTime() >= start.getTime() && rowDate.getTime() <= end.getTime()
+        Logger.log("Está dentro do período? " + dentroDoPerido)
+
+        if (dentroDoPerido) {
+          var hora = rows[i][1]
+          if (hora instanceof Date) {
+            hora = Utilities.formatDate(hora, Session.getScriptTimeZone(), "HH:mm")
+          } else {
+            hora = String(hora)
+          }
+
+          var registro = {
+            data: rowDateStr,
+            hora: hora,
+            glicemia: String(rows[i][2]),
+          }
+
+          filteredData.push(registro)
+          Logger.log("✓ Registro ADICIONADO: " + JSON.stringify(registro))
+        } else {
+          Logger.log("✗ Registro NÃO está no período")
+        }
+      }
+
+      Logger.log("==========================================")
+      Logger.log("TOTAL DE REGISTROS FILTRADOS: " + filteredData.length)
+      Logger.log("==========================================")
+
+      if (filteredData.length > 0) {
+        Logger.log("Primeiros registros: " + JSON.stringify(filteredData.slice(0, 3)))
+      }
+
+      lock.releaseLock()
+      return ContentService.createTextOutput(JSON.stringify({ result: "success", data: filteredData })).setMimeType(
+        ContentService.MimeType.JSON,
+      )
+    }
+
+    lock.releaseLock()
+    return ContentService.createTextOutput(JSON.stringify({ result: "error", error: "Invalid action" })).setMimeType(
+      ContentService.MimeType.JSON,
+    )
+  } catch (error) {
+    Logger.log("==========================================")
+    Logger.log("ERRO CRÍTICO: " + error.toString())
+    Logger.log("Stack trace: " + error.stack)
+    Logger.log("==========================================")
+    return ContentService.createTextOutput(JSON.stringify({ result: "error", error: error.toString() })).setMimeType(
+      ContentService.MimeType.JSON,
+    )
+  }
+}
